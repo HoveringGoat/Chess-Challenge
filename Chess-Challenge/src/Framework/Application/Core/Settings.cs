@@ -10,7 +10,7 @@ namespace ChessChallenge.Application
         public const float MinMoveDelay = 0;
         public static readonly bool RunBotsOnSeparateThread = true;
 
-        public const int MaxTokenCount = 1024;
+        public const int MaxTokenCount = 9999;
 
         public const LogType MessagesToLog = LogType.All;
 
