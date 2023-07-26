@@ -1,17 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 using System.Linq;
-
 using ChessChallenge.API;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 public class MyBot : IChessBot
 {
-    Dictionary<ulong, int> boardEvals = new Dictionary<ulong, int>();
+    Dictionary<ulong, double> boardEvals = new Dictionary<ulong, double>();
     Dictionary<PieceType, int> pieceValues = new Dictionary<PieceType, int>()
     {
-        { PieceType.King, 0 },
+        { PieceType.King, 1000 },
         { PieceType.Queen, 1000 },
         { PieceType.Rook, 500 },
         { PieceType.Bishop, 330 },
@@ -19,13 +16,13 @@ public class MyBot : IChessBot
         { PieceType.Pawn, 100 },
         { PieceType.None, 0 },
     };
-    int numberOfTopMovesToTake = 5;
+    int numberOfTopMovesToTake = 20;
 
     // Think time in ms
     int turnMaxThinkTime = 50;
-
-    // Accept an eval within 10%
-    float maxAcceptableEvalDrift = 0.1f;
+    int maxDepth = 10;
+    // Accept an eval within top 5%
+    float maxAcceptableEvalDrift = 0.05f;
 
     public Move Think(Board board, Timer timer)
     {
@@ -33,67 +30,85 @@ public class MyBot : IChessBot
         {
             Dictionary<Move, int> moves = new Dictionary<Move, int>();
             Random rng = new();
-
-            var bestMoves = GetBestMoves(board);
-            var oppBestMoves = new List<MoveEval>();
+            boardEvals.Clear();
+            var bestMoves = new List<List<MoveEval>>();
+            bestMoves.Add(GetBestMoves(board));
+            bestMoves.Add(new List<MoveEval>());
             int depth = 0;
 
             do
             {
                 depth++;
-                Console.WriteLine($"Evaluating depth {depth} - Total moves: {bestMoves.Count+ oppBestMoves.Count}");
-                // if even its our turn
-                if (depth % 2 == 0)
+                // if even its our turn; index 0 is our moves
+                var index = depth % 2;
+
+                if (index == 0)
                 {
-                    // for each opp move get the best next moves
-                    foreach (var moveEval in oppBestMoves)
+                    //Console.WriteLine($"Evaluating depth {depth/2} - Total moves: {bestMoves[0].Count + bestMoves[1].Count}");
+                }
+                // for each opp move get the best next moves
+                foreach (var moveEval in bestMoves[(index + 1) % 2])
+                {
+                    // ensure this was from the last set of moves.
+                    if (moveEval.depth + 1 == depth)
                     {
-                        // ensure this was from the last set of moves.
-                        if (moveEval.depth + 1 == depth)
+                        var moveOrder = GetMoveOrder(moveEval);
+                        PerformMoves(board, moveOrder);
+                        bestMoves[index].AddRange(GetBestMoves(board, moveEval, this.numberOfTopMovesToTake * (2 / depth + 1)));
+                        UndoMoves(board, moveOrder);
+                        if (timer.MillisecondsElapsedThisTurn > this.turnMaxThinkTime)
                         {
-                            var moveOrder = GetMoveOrder(moveEval);
-                            PerformMoves(board, moveOrder);
-                            bestMoves.AddRange(GetBestMoves(board, moveEval));
-                            UndoMoves(board, moveOrder);
-                            if (timer.MillisecondsElapsedThisTurn > this.turnMaxThinkTime)
-                            {
-                                break;
-                            }
+                            break;
                         }
                     }
                 }
-                else
-                {
-                    // for each opp move get the best next moves
-                    foreach (var moveEval in bestMoves)
-                    {
-                        // ensure this was from the last set of moves.
-                        if (moveEval.depth + 1 == depth)
-                        {
-                            var moveOrder = GetMoveOrder(moveEval);
-                            PerformMoves(board, moveOrder);
-                            // opp moves are gunna be a bit dumb. need a better method
-                            oppBestMoves.AddRange(GetBestMoves(board, moveEval, 1));
-                            UndoMoves(board, moveOrder);
-                            if (timer.MillisecondsElapsedThisTurn > this.turnMaxThinkTime)
-                            {
-                                break;
-                            }
-                        }
-                    }
-                }
+
+                bestMoves[index] = EvaluateBestMovesV2(bestMoves[index], depth, index == 1);
+                var numMoves = bestMoves[0].Count + bestMoves[1].Count;
+                Console.WriteLine($"Evaluating depth {depth / 2} - Total moves: {numMoves}");
+
+                WeedOutBadMoves(ref bestMoves, depth);
+                var removed = numMoves - (bestMoves[0].Count + bestMoves[1].Count);
+                Console.WriteLine($"Removed {removed} moves.");
             }
-            while (timer.MillisecondsElapsedThisTurn < this.turnMaxThinkTime);
+            while (timer.MillisecondsElapsedThisTurn < this.turnMaxThinkTime && depth < maxDepth);
 
-            Console.WriteLine($"Total Moves Evaluated: {bestMoves.Count}");
+            var movesEvaluated = bestMoves[0].Count + bestMoves[1].Count;
 
-            bestMoves = EvaluateBestMoves(bestMoves, depth);
-            var topMoveEval = SelectTopMove(bestMoves, rng);
+            var ourBestMoves = bestMoves[0]
+                .Where(moves => moves.depth == 0)
+                .ToList();
 
-            Console.WriteLine($"Winning Move {topMoveEval.move.MovePieceType} to {topMoveEval.move.TargetSquare.Name}. eval: {topMoveEval.eval}");
+            var topMoveEval = SelectTopMove(ourBestMoves, rng);
+
+            var theirBestMoves = bestMoves[1]
+                .Where(moves => moves.depth == 1)
+                .ToList();
+
+            if (topMoveEval == null)
+            {
+                topMoveEval = theirBestMoves.FirstOrDefault().previousMove;
+            }
+
+            theirBestMoves = theirBestMoves
+                .Where(moves => moves.previousMove == topMoveEval)
+                .ToList();
+
+            var oppTopMoveEval = SelectTopMove(theirBestMoves, rng);
+
+            Console.WriteLine($"Time to evaluate: {timer.MillisecondsElapsedThisTurn.ToString("N0")} ms");
+            Console.WriteLine($"Total Moves Evaluated: {movesEvaluated}");
+            Console.WriteLine($"Winning Move: {topMoveEval.move.MovePieceType} to {topMoveEval.move.TargetSquare.Name}. eval: {topMoveEval.eval.ToString("N2")}");
+            Console.WriteLine($"Expected oppenent move: {oppTopMoveEval?.move.MovePieceType} to {oppTopMoveEval?.move.TargetSquare.Name}. eval: {oppTopMoveEval?.eval.ToString("N2")}");
+
+            if (topMoveEval.eval < -100)
+            {
+                //why are we picking a bad move da fuq
+            }
+            Console.WriteLine($"");
             return topMoveEval.move;
         }
-        catch (Exception  e)
+        catch (Exception e)
         {
             Console.WriteLine(e.ToString());
         }
@@ -103,8 +118,18 @@ public class MyBot : IChessBot
 
     private MoveEval SelectTopMove(List<MoveEval> bestMoves, Random rng)
     {
+        if (!bestMoves.Any())
+        {
+            // wtf
+            return null;
+        }
         var topMoveEval = bestMoves[0];
-        var moves = bestMoves.Where(moveEval => moveEval.eval * (1 + this.maxAcceptableEvalDrift) > topMoveEval.eval).ToArray();
+        var moves = bestMoves.Where(moveEval => IsWithinEvalTolerance(moveEval.eval, topMoveEval.eval, this.maxAcceptableEvalDrift)).ToArray();
+
+        //if (!moves.Any()) 
+        //{
+        //    return topMoveEval;
+        //}
 
         // return all the top moves?
         return moves[rng.Next(moves.Length)];
@@ -112,32 +137,18 @@ public class MyBot : IChessBot
 
     private void PerformMoves(Board board, List<Move> moveOrder)
     {
-        try
+        foreach (var move in moveOrder)
         {
-            foreach (var move in moveOrder)
-            {
-                board.MakeMove(move);
-            }
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine(e.ToString());
+            board.MakeMove(move);
         }
     }
 
     private void UndoMoves(Board board, List<Move> moveOrder)
     {
-        try
+        moveOrder.Reverse();
+        foreach (var move in moveOrder)
         {
-            moveOrder.Reverse();
-            foreach (var move in moveOrder)
-            {
-                board.UndoMove(move);
-            }
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine(e.ToString());
+            board.UndoMove(move);
         }
     }
 
@@ -145,39 +156,101 @@ public class MyBot : IChessBot
     {
         var moveOrder = new List<Move>();
 
-        while (moveEval.previousMove != null)
+        while (moveEval != null)
         {
-            moveEval = moveEval.previousMove;
             moveOrder.Add(moveEval.move);
+            moveEval = moveEval.previousMove;
         }
 
         moveOrder.Reverse();
 
-        if (moveOrder.Count > 2)
-        {
-            return moveOrder;
-        }
-
         return moveOrder;
     }
 
+
+    private void WeedOutBadMoves(ref List<List<MoveEval>> bestMoves, int depth)
+    {
+        if (depth < 2)
+        {
+            return;
+        }
+        if (depth > 3)
+        {
+            // interesting.
+        }
+        // alternate back and forth and weed out tolerance failing moves and eliminate all moves downstream
+        var ourMoves = bestMoves[0].Where(moves => moves.depth == 0); // always only a single move before
+        var oppMoves = bestMoves[1].Where(moves => moves.depth == 1); // multiple previous moves
+
+        var removed = RemoveBadMoves(ourMoves, ref bestMoves, depth);
+        foreach (var moveSet in oppMoves.GroupBy(move => move.previousMove))
+        {
+            if (removed)
+            {
+                break;
+            }
+            removed = RemoveBadMoves(moveSet, ref bestMoves, depth);
+        }
+
+        if (removed)
+        {
+            WeedOutBadMoves(ref bestMoves, depth);
+        }
+    }
+
+    private bool RemoveBadMoves(IEnumerable<MoveEval> moves, ref List<List<MoveEval>> bestMoves, int depth)
+    {
+        var tolerance = 1.5 / depth;
+        moves = moves.OrderByDescending(move => move.eval);
+        var topMove = moves.FirstOrDefault().eval;
+        moves.Reverse();
+        foreach (var move in moves)
+        {
+            // only analyze the highest level moves.
+            if (!IsWithinEvalTolerance(move.eval + 10, topMove, tolerance))
+            {
+                // Found a looser
+                RemoveMovesRelatedTo(move, ref bestMoves);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void RemoveMovesRelatedTo(MoveEval move, ref List<List<MoveEval>> bestMoves)
+    {
+        var index = (move.depth + 1) % 2;
+
+        var movesToRemove = bestMoves[index].Where(move => move.previousMove == move);
+
+        if (movesToRemove.Any())
+        {
+            foreach (var moveEval in movesToRemove)
+            {
+                RemoveMovesRelatedTo(moveEval, ref bestMoves);
+            }
+        }
+
+        bestMoves[(index + 1) % 2].Remove(move);
+    }
     // Evaluates the best board moves from a list of moveEvals (different depths)
-    private List<MoveEval> EvaluateBestMoves(List<MoveEval> bestMoves, int depth)
+    private List<MoveEval> EvaluateBestMoves(List<MoveEval> bestMoves, int depth, bool isOpp = false)
     {
         // avg the eval at highest depth and eval up
         MoveEval currentPreviousMoveEval = null;
         int count = 0;
-        int sum = 0;
+        double sum = 0;
 
         // if we were adding to opp reduce depth 1 and continue
-        if (depth % 2 != 0)
+        if (depth % 2 != 0 && !isOpp)
         {
             depth--;
         }
 
         while (depth > 1)
         {
-            foreach(var moveEval in bestMoves)
+            foreach (var moveEval in bestMoves)
             {
                 if (moveEval.depth == depth)
                 {
@@ -203,8 +276,37 @@ public class MyBot : IChessBot
         }
 
         return bestMoves
-            .Where(moves => moves.depth == 0)
             .OrderByDescending(moves => moves.eval)
+            .ToList();
+    }
+
+    // Evaluates the best board moves from a list of moveEvals (different depths)
+    private List<MoveEval> EvaluateBestMovesV2(List<MoveEval> bestMoves, int depth, bool isOpp = false)
+    {
+        // avg the eval at highest depth and eval up
+
+        while (depth > 1)
+        {
+            var groupings = bestMoves.Where(move => move.depth == depth).GroupBy(move => move.previousMove.previousMove);
+
+            foreach (var grouping in groupings)
+            {
+                int count = 0;
+                double sum = 0;
+
+                foreach (var move in grouping)
+                {
+                    sum += move.eval;
+                    count++;
+                }
+                grouping.FirstOrDefault().previousMove.previousMove.eval = sum / count;
+            }
+            depth -= 2;
+        }
+
+        return bestMoves
+            .OrderBy(moves => moves.depth)
+            .ThenByDescending(moves => moves.eval)
             .ToList();
     }
 
@@ -221,97 +323,108 @@ public class MyBot : IChessBot
             moveEvals.Add(moveEval);
         }
 
-        return moveEvals
+        moveEvals = moveEvals
             .OrderByDescending(moveEval => moveEval.eval)
             .Take(movestoTake ?? this.numberOfTopMovesToTake)
             .ToList();
+
+        return moveEvals;
     }
 
-    private int EvaluateBoard(Board board, Move move, MoveEval previousMove)
+    private bool IsWithinEvalTolerance(double eval, double maxEval, double tolerance)
+    {
+        if (eval < 10)
+        {
+            maxEval += eval * -2;
+            eval += eval * -2;
+        }
+
+        var adjustedEval = eval * (1 + tolerance) + 5;
+
+        var isWithinTolerance = adjustedEval > maxEval;
+        return isWithinTolerance;
+    }
+
+    private double EvaluateBoard(Board board, Move move, MoveEval previousMove)
     {
         try
         {
             //Console.WriteLine($"Move {move.MovePieceType} to {move.TargetSquare.Name}.");
-
-            // TODO get data from move
-            //Piece capturedPiece = board.GetPiece(move.TargetSquare);
-            //if (capturedPiece != null)
-            //{
-            //    eval += pieceValues[capturedPiece.PieceType];
-            //}
-
-            // TODO move into check below
-            //// get number of attacked pieces
-            //for (int i = 0; i < 64; i++)
-            //{
-            //    var square = new Square(i);
-            //    if (board.SquareIsAttackedByOpponent(square))
-            //    {
-            //        // Get value of attacked piece
-            //        eval += 0.01 * pieceValues[board.GetPiece(square).PieceType];
-            //    }
-            //}
-            if (move.RawValue == 1624)
-            {
-                // ????
-            }
-
+            var lastLegalMoves = board.GetLegalMoves().Length;
             board.MakeMove(move);
+
+            if (boardEvals.ContainsKey(board.ZobristKey))
+            {
+                var val = boardEvals[board.ZobristKey];
+                board.UndoMove(move);
+                return val;
+            }
 
             double eval = previousMove?.eval * -1 ?? 0;
 
-            if (move.RawValue != 1624)
+            // get number of pieces attacked
+            if (board.IsInCheckmate())
             {
-                // TODO make a dict we can pull previously calculated moves from. Shouldnt be a huge impact
-                if (boardEvals.ContainsKey(board.ZobristKey))
-                {
-                    int val = boardEvals[board.ZobristKey];
-                    board.UndoMove(move);
-                    return val;
-                }
-
-                if (board.IsInCheckmate())
-                {
-                    eval += 10000;
-                }
-
-                if (board.IsInCheck())
-                {
-                    eval += 20;
-                }
-
-                // get number of pieces attacked
-                for (int i = 0; i < 64; i++)
-                {
-                    var square = new Square(i);
-
-                    if (board.SquareIsAttackedByOpponent(square))
-                    {
-                        eval -= 0.01 * pieceValues[board.GetPiece(square).PieceType];
-                    }
-                }
-
-                var a = board.IsWhiteToMove;
-                var b = a;
-                //if (board.TrySkipTurn())
-                //{
-                //    b = board.IsWhiteToMove;
-
-                //    if (board.SquareIsAttackedByOpponent(move.TargetSquare))
-                //    {
-                //        eval -= pieceValues[board.GetPiece(move.TargetSquare).PieceType];
-                //    }
-
-                //    board.UndoSkipTurn();
-                //}
-
-                //Console.WriteLine($"Move {move.MovePieceType} to {move.TargetSquare.Name}. eval: {(int) eval}");
-
-                boardEvals.Add(board.ZobristKey, (int) eval);
+                eval += 10000;
             }
 
+            if (move.IsCapture)
+            {
+                eval += pieceValues[move.CapturePieceType];
+            }
+
+            if (move.IsCastles)
+            {
+                eval += 50;
+            }
+            if (move.IsPromotion)
+            {
+                eval += 800;
+            }
+
+            var oppMoves = board.GetLegalMoves();
+
+            eval -= (oppMoves.Length * .1f);
+            foreach (var oppMove in oppMoves)
+            {
+                if (oppMove.IsCapture)
+                {
+                    if (oppMove.TargetSquare == move.TargetSquare)
+                    {
+                        eval -= pieceValues[oppMove.CapturePieceType];
+                    }
+
+                    eval -= pieceValues[oppMove.CapturePieceType] * .01;
+                }
+                board.MakeMove(oppMove);
+                if (board.IsInCheckmate())
+                {
+                    eval -= 10000;
+                }
+                board.UndoMove(oppMove);
+            }
+
+            board.MakeMove(Move.NullMove);
+
+            // more moves available is better
+            var legalMoves = board.GetLegalMoves();
+            eval += (legalMoves.Length - lastLegalMoves) * .2f;
+
+            foreach (var nextMove in legalMoves)
+            {
+                if (nextMove.IsCapture)
+                {
+                    eval += pieceValues[nextMove.CapturePieceType] * .01;
+                }
+            }
+            board.UndoMove(Move.NullMove);
+
+            //Console.WriteLine($"Move {move.MovePieceType} to {move.TargetSquare.Name}. eval: {eval}");
+
+            boardEvals.Add(board.ZobristKey, eval);
+
             board.UndoMove(move);
-            return (int) eval;
+            return eval;
         }
         catch (Exception e)
         {
@@ -323,16 +436,16 @@ public class MyBot : IChessBot
     private class MoveEval
     {
         public Move move;
-        public int eval;
+        public double eval;
         public int depth;
         public MoveEval previousMove;
 
-        public MoveEval(Move move, int eval, MoveEval previousMove = null)
+        public MoveEval(Move move, double eval, MoveEval previousMove = null)
         {
             this.move = move;
             this.eval = eval;
             this.previousMove = previousMove;
-            this.depth = previousMove?.depth+1 ?? 0;
+            this.depth = previousMove?.depth + 1 ?? 0;
         }
     }
 }
