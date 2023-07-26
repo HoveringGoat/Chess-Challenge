@@ -9,7 +9,8 @@ namespace ChessChallenge.Application
         // Game settings
         public const int GameDurationMilliseconds = 60 * 1000;
         public const float MinMoveDelay = 0;
-        public static bool RunBotsOnSeparateThread = false; // IF NOT IN FAST FORWARD, TURN THIS ON - It's no longer readonly
+
+        public static bool RunBotsOnSeparateThread = true; // IF NOT IN FAST FORWARD, TURN THIS ON - It's no longer readonly
 
         // Display settings
         public const bool DisplayBoardCoordinates = true;
@@ -17,7 +18,7 @@ namespace ChessChallenge.Application
         public static readonly Vector2 ScreenSizeBig = new(1920, 1080);
 
         // Other settings
-        public const int MaxTokenCount = 1024;
+        public const int MaxTokenCount = 9999;
         public const LogType MessagesToLog = LogType.All;
 
         public enum LogType

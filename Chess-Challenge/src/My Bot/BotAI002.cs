@@ -3,12 +3,12 @@ using System.Collections.Generic;
 using System.Linq;
 using ChessChallenge.API;
 
-public class MyBot : IChessBot
+public class BotAI002 : IChessBot
 {
     Dictionary<ulong, double> boardEvals = new Dictionary<ulong, double>();
     Dictionary<PieceType, int> pieceValues = new Dictionary<PieceType, int>()
     {
-        { PieceType.King, 1000 },
+        { PieceType.King, 0 },
         { PieceType.Queen, 1000 },
         { PieceType.Rook, 500 },
         { PieceType.Bishop, 330 },
@@ -17,25 +17,37 @@ public class MyBot : IChessBot
         { PieceType.None, 0 },
     };
     int numberOfTopMovesToTake = 20;
+    List<List<MoveEval>> bestMoves = new List<List<MoveEval>>();
 
     // Think time in ms
     int turnMaxThinkTime = 50;
     int maxDepth = 10;
-    // Accept an eval within top 5%
-    float maxAcceptableEvalDrift = 0.05f;
-
+    // Accept an eval within top 10%
+    float maxAcceptableEvalDrift = 0.1f;
+    public BotAI002()
+    {
+        bestMoves.Add(new List<MoveEval>());
+        bestMoves.Add(new List<MoveEval>());
+    }
     public Move Think(Board board, Timer timer)
     {
         try
         {
-            Dictionary<Move, int> moves = new Dictionary<Move, int>();
-            Random rng = new();
-            boardEvals.Clear();
-            var bestMoves = new List<List<MoveEval>>();
-            bestMoves.Add(GetBestMoves(board));
-            bestMoves.Add(new List<MoveEval>());
+            Random rng = new(1337);
             int depth = 0;
 
+            // If we have existing moves, adjust em. Then add the new ones.
+            if (bestMoves[0].Any())
+            {
+                AdjustDepth(ref bestMoves, board);
+            }
+
+            // Make sure its a new move
+            var newMoves = GetBestMoves(board)
+                .Where(newMoves => !bestMoves[0].Any(moves => moves.move == newMoves.move));
+
+            bestMoves[0].AddRange(newMoves);
+            
             do
             {
                 depth++;
@@ -47,14 +59,14 @@ public class MyBot : IChessBot
                     //Console.WriteLine($"Evaluating depth {depth/2} - Total moves: {bestMoves[0].Count + bestMoves[1].Count}");
                 }
                 // for each opp move get the best next moves
-                foreach (var moveEval in bestMoves[(index + 1) % 2])
+                foreach (var moveEval in bestMoves[(index+1)%2])
                 {
                     // ensure this was from the last set of moves.
                     if (moveEval.depth + 1 == depth)
                     {
                         var moveOrder = GetMoveOrder(moveEval);
                         PerformMoves(board, moveOrder);
-                        bestMoves[index].AddRange(GetBestMoves(board, moveEval, this.numberOfTopMovesToTake * (2 / depth + 1)));
+                        bestMoves[index].AddRange(GetBestMoves(board, moveEval, this.numberOfTopMovesToTake * (2/depth+1)));
                         UndoMoves(board, moveOrder);
                         if (timer.MillisecondsElapsedThisTurn > this.turnMaxThinkTime)
                         {
@@ -65,7 +77,7 @@ public class MyBot : IChessBot
 
                 bestMoves[index] = EvaluateBestMovesV2(bestMoves[index], depth, index == 1);
                 var numMoves = bestMoves[0].Count + bestMoves[1].Count;
-                Console.WriteLine($"Evaluating depth {depth / 2} - Total moves: {numMoves}");
+                Console.WriteLine($"Evaluating depth {depth} - Total moves: {numMoves}");
 
                 WeedOutBadMoves(ref bestMoves, depth);
                 var removed = numMoves - (bestMoves[0].Count + bestMoves[1].Count);
@@ -108,11 +120,32 @@ public class MyBot : IChessBot
             Console.WriteLine($"");
             return topMoveEval.move;
         }
-        catch (Exception e)
+        catch (Exception  e)
         {
             Console.WriteLine(e.ToString());
         }
         return new Move();
+    }
+
+    private void AdjustDepth( ref List<List<MoveEval>> bestMoves, Board board)
+    {
+        var legalMoves = board.GetLegalMoves();
+        List<MoveEval> invalidMoves = new List<MoveEval>();
+        for (int i = 0; i < bestMoves.Count; i++)
+        {
+            foreach (var move in bestMoves[i])
+            {
+                move.depth -= 2;
+            }
+
+            bestMoves[i] = bestMoves[i].Where(move => move.depth >= 0).ToList();
+            invalidMoves.AddRange(bestMoves[i].Where(move => move.depth == 0 && !legalMoves.Contains(move.move)));
+        }
+
+        foreach (var invalidMove in invalidMoves)
+        {
+            RemoveMovesRelatedTo(invalidMove, ref bestMoves);
+        }
     }
 
 
@@ -156,7 +189,7 @@ public class MyBot : IChessBot
     {
         var moveOrder = new List<Move>();
 
-        while (moveEval != null)
+        while (moveEval != null && moveEval.depth>=0)
         {
             moveOrder.Add(moveEval.move);
             moveEval = moveEval.previousMove;
@@ -174,7 +207,7 @@ public class MyBot : IChessBot
         {
             return;
         }
-        if (depth > 3)
+        if (depth >3)
         {
             // interesting.
         }
@@ -200,14 +233,14 @@ public class MyBot : IChessBot
 
     private bool RemoveBadMoves(IEnumerable<MoveEval> moves, ref List<List<MoveEval>> bestMoves, int depth)
     {
-        var tolerance = 1.5 / depth;
+        var tolerance = 1.5/depth;
         moves = moves.OrderByDescending(move => move.eval);
         var topMove = moves.FirstOrDefault().eval;
         moves.Reverse();
         foreach (var move in moves)
         {
             // only analyze the highest level moves.
-            if (!IsWithinEvalTolerance(move.eval + 10, topMove, tolerance))
+            if (!IsWithinEvalTolerance(move.eval+10, topMove, tolerance))
             {
                 // Found a looser
                 RemoveMovesRelatedTo(move, ref bestMoves);
@@ -226,7 +259,7 @@ public class MyBot : IChessBot
 
         if (movesToRemove.Any())
         {
-            foreach (var moveEval in movesToRemove)
+            foreach(var moveEval in movesToRemove)
             {
                 RemoveMovesRelatedTo(moveEval, ref bestMoves);
             }
@@ -363,7 +396,7 @@ public class MyBot : IChessBot
             double eval = previousMove?.eval * -1 ?? 0;
 
             // get number of pieces attacked
-            if (board.IsInCheckmate())
+            if(board.IsInCheckmate())
             {
                 eval += 10000;
             }
@@ -384,8 +417,7 @@ public class MyBot : IChessBot
 
             var oppMoves = board.GetLegalMoves();
 
-            eval -= (oppMoves.Length * .1f);
-            foreach (var oppMove in oppMoves)
+            foreach ( var oppMove in oppMoves )
             {
                 if (oppMove.IsCapture)
                 {
@@ -396,28 +428,24 @@ public class MyBot : IChessBot
 
                     eval -= pieceValues[oppMove.CapturePieceType] * .01;
                 }
-                board.MakeMove(oppMove);
-                if (board.IsInCheckmate())
-                {
-                    eval -= 10000;
-                }
-                board.UndoMove(oppMove);
             }
 
-            board.MakeMove(Move.NullMove);
-
-            // more moves available is better
-            var legalMoves = board.GetLegalMoves();
-            eval += (legalMoves.Length - lastLegalMoves) * .2f;
-
-            foreach (var nextMove in legalMoves)
+            if (board.TrySkipTurn())
             {
-                if (nextMove.IsCapture)
+                // more moves available is better
+                var legalMoves = board.GetLegalMoves();
+                eval += (legalMoves.Length - lastLegalMoves) * .5f;
+
+                foreach (var nextMove in oppMoves)
                 {
-                    eval += pieceValues[nextMove.CapturePieceType] * .01;
+                    if (nextMove.IsCapture)
+                    {
+                        eval += pieceValues[nextMove.CapturePieceType] * .01;
+                    }
                 }
+
+                board.UndoSkipTurn();
             }
-            board.UndoMove(Move.NullMove);
 
             //Console.WriteLine($"Move {move.MovePieceType} to {move.TargetSquare.Name}. eval: {eval}");
 
@@ -445,7 +473,7 @@ public class MyBot : IChessBot
             this.move = move;
             this.eval = eval;
             this.previousMove = previousMove;
-            this.depth = previousMove?.depth + 1 ?? 0;
+            this.depth = previousMove?.depth+1 ?? 0;
         }
     }
 }

@@ -3,12 +3,12 @@ using System.Collections.Generic;
 using System.Linq;
 using ChessChallenge.API;
 
-public class MyBot : IChessBot
+public class BotAI001 : IChessBot
 {
     Dictionary<ulong, double> boardEvals = new Dictionary<ulong, double>();
     Dictionary<PieceType, int> pieceValues = new Dictionary<PieceType, int>()
     {
-        { PieceType.King, 1000 },
+        { PieceType.King, 0 },
         { PieceType.Queen, 1000 },
         { PieceType.Rook, 500 },
         { PieceType.Bishop, 330 },
@@ -384,7 +384,6 @@ public class MyBot : IChessBot
 
             var oppMoves = board.GetLegalMoves();
 
-            eval -= (oppMoves.Length * .1f);
             foreach (var oppMove in oppMoves)
             {
                 if (oppMove.IsCapture)
@@ -404,20 +403,22 @@ public class MyBot : IChessBot
                 board.UndoMove(oppMove);
             }
 
-            board.MakeMove(Move.NullMove);
-
-            // more moves available is better
-            var legalMoves = board.GetLegalMoves();
-            eval += (legalMoves.Length - lastLegalMoves) * .2f;
-
-            foreach (var nextMove in legalMoves)
+            if (board.TrySkipTurn())
             {
-                if (nextMove.IsCapture)
+                // more moves available is better
+                var legalMoves = board.GetLegalMoves();
+                eval += (legalMoves.Length - lastLegalMoves) * .2f;
+
+                foreach (var nextMove in oppMoves)
                 {
-                    eval += pieceValues[nextMove.CapturePieceType] * .01;
+                    if (nextMove.IsCapture)
+                    {
+                        eval += pieceValues[nextMove.CapturePieceType] * .01;
+                    }
                 }
+
+                board.UndoSkipTurn();
             }
-            board.UndoMove(Move.NullMove);
 
             //Console.WriteLine($"Move {move.MovePieceType} to {move.TargetSquare.Name}. eval: {eval}");
 
